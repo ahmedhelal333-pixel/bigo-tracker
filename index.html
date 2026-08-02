@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>تتبع رحلة BiGo</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, Arial, sans-serif; }
+  body { background: #fff; }
+  #map { width: 100%; height: 65vh; }
+  .panel { padding: 18px; }
+  .title { font-size: 20px; font-weight: bold; color: #111; margin-bottom: 6px; text-align: center; }
+  .status { font-size: 15px; font-weight: 600; color: #2E5EFF; text-align: center; margin-bottom: 14px; }
+  .info-row { display: flex; justify-content: space-around; background: #F2F5FF; border-radius: 14px; padding: 14px; }
+  .info-item { text-align: center; }
+  .info-label { font-size: 12px; color: #666; }
+  .info-value { font-size: 16px; font-weight: bold; color: #111; margin-top: 2px; }
+  .loading { text-align: center; padding: 60px 20px; color: #666; }
+</style>
+</head>
+<body>
+
+<div id="loading" class="loading">جاري تحميل بيانات الرحلة...</div>
+
+<div id="content" style="display:none;">
+  <div id="map"></div>
+  <div class="panel">
+    <div class="title">🚗 تتبع رحلة BiGo</div>
+    <div class="status" id="statusText">جاري التحميل...</div>
+    <div class="info-row">
+      <div class="info-item">
+        <div class="info-label">نوع المركبة</div>
+        <div class="info-value" id="vehicleType">-</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">السعر التقريبي</div>
+        <div class="info-value" id="priceValue">-</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://llqlcoezefkhphleqaue.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_phW6Y1-xMp4lLHyEgaQ6yQ_GmrBfXX7';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  const VEHICLE_LABELS = { tuktuk: 'توكتوك', trosikl: 'تروسكل', motosikl: 'موتوسكل' };
+  const STATUS_LABELS = {
+    pending: '⏳ جاري البحث عن سائق...',
+    accepted: '✅ السائق في الطريق إليك',
+    arrived: '📍 السائق وصل',
+    ongoing: '🚗 الرحلة جارية',
+    completed: '🎉 وصل بالسلامة',
+    cancelled: '❌ تم إلغاء الرحلة',
+  };
+
+  const params = new URLSearchParams(window.location.search);
+  const rideId = params.get('ride');
+
+  let map, driverMarker, destMarker;
+
+  function initMap(lat, lng) {
+    map = L.map('map').setView([lat, lng], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+    }).addTo(map);
+  }
+
+  function updateDriverMarker(lat, lng) {
+    if (!lat || !lng) return;
+    if (driverMarker) {
+      driverMarker.setLatLng([lat, lng]);
+    } else {
+      driverMarker = L.marker([lat, lng], {
+        icon: L.divIcon({ className: '', html: '🛺', iconSize: [30, 30] }),
+      }).addTo(map);
+    }
+    map.panTo([lat, lng]);
+  }
+
+  async function loadRide() {
+    if (!rideId) {
+      document.getElementById('loading').innerText = 'رابط غير صحيح';
+      return;
+    }
+
+    const { data: ride, error } = await supabase.from('rides').select('*').eq('id', rideId).single();
+    if (error || !ride) {
+      document.getElementById('loading').innerText = 'لم يتم العثور على الرحلة';
+      return;
+    }
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+    document.getElementById('vehicleType').innerText = VEHICLE_LABELS[ride.vehicle_type] || ride.vehicle_type;
+    document.getElementById('priceValue').innerText = ride.price + ' جنيه';
+    document.getElementById('statusText').innerText = STATUS_LABELS[ride.status] || ride.status;
+
+    initMap(ride.pickup_lat, ride.pickup_lng);
+
+    destMarker = L.marker([ride.destination_lat, ride.destination_lng], {
+      icon: L.divIcon({ className: '', html: '🔴', iconSize: [24, 24] }),
+    }).addTo(map);
+
+    if (ride.driver_id) {
+      const { data: driver } = await supabase.from('drivers').select('current_lat, current_lng').eq('id', ride.driver_id).single();
+      if (driver) updateDriverMarker(driver.current_lat, driver.current_lng);
+
+      supabase
+        .channel(`driver-${ride.driver_id}`)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'drivers', filter: `id=eq.${ride.driver_id}` }, (payload) => {
+          updateDriverMarker(payload.new.current_lat, payload.new.current_lng);
+        })
+        .subscribe();
+    }
+
+    supabase
+      .channel(`ride-status-${rideId}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rides', filter: `id=eq.${rideId}` }, (payload) => {
+        document.getElementById('statusText').innerText = STATUS_LABELS[payload.new.status] || payload.new.status;
+      })
+      .subscribe();
+  }
+
+  loadRide();
+</script>
+</body>
+</html>
