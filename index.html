@@ -88,7 +88,13 @@
       return;
     }
 
-    const { data: ride, error } = await sb.from('rides').select('*').eq('id', rideId).single();
+    // نجيب فقط الأعمدة المطلوبة للعرض، مش الجدول كامل (حماية للخصوصية)
+    const { data: ride, error } = await sb
+      .from('rides')
+      .select('id, vehicle_type, price, status, pickup_lat, pickup_lng, destination_lat, destination_lng, driver_id')
+      .eq('id', rideId)
+      .single();
+
     if (error || !ride) {
       document.getElementById('loading').innerText = 'لم يتم العثور على الرحلة';
       return;
@@ -107,7 +113,12 @@
     }).addTo(map);
 
     if (ride.driver_id) {
-      const { data: driver } = await sb.from('drivers').select('current_lat, current_lng').eq('id', ride.driver_id).single();
+      // نجيب فقط الموقع اللحظي، مش أي بيانات شخصية للسائق
+      const { data: driver } = await sb
+        .from('drivers')
+        .select('current_lat, current_lng')
+        .eq('id', ride.driver_id)
+        .single();
       if (driver) updateDriverMarker(driver.current_lat, driver.current_lng);
 
       sb
